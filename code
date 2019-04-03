@@ -1,0 +1,261 @@
+REPORT ZSERKAN_O_PASS_RESET.
+
+TABLES ZSB_T_USER.
+
+DATA: gt_data TYPE TABLE OF ZSB_T_USER,
+      gs_data LIKE LINE OF gt_data.
+
+DATA: gt_name TYPE TABLE OF SUID_ST_BNAME,
+      gs_name LIKE LINE OF gt_name.
+
+DATA: gt_pass TYPE TABLE OF SUID_ST_NODE_PASSWORD_EXT,
+      gs_pass LIKE LINE OF gt_pass.
+
+DATA: gt_user TYPE TABLE OF USR21,
+      gs_user LIKE LINE OF gt_user.
+
+DATA: gt_mail TYPE TABLE OF ADR6,
+      gs_mail LIKE LINE OF gt_mail.
+
+DATA: persno TYPE USR21-PERSNUMBER,
+      mail TYPE ADR6-SMTP_ADDR.
+
+DATA :   lv_password TYPE char10,    " Generated Password is stored here
+         lv_pass_chars(80).          " We provide the characters we desire in the password
+
+DATA: smth TYPE string,
+      index TYPE i,
+      length TYPE i,
+      char  TYPE c,
+      num   TYPE i,
+      lv_len TYPE i.
+
+DATA: sayacN(1) TYPE c,
+      sayacC(1) TYPE c.
+
+sayacN = '0'.
+sayacC = '0'.
+
+DATA: RETURN TYPE TABLE OF BAPIRET2,
+    USERNAME LIKE  BAPIBNAME-BAPIBNAME,
+    PASSWORD LIKE  BAPIPWD,
+    PASSWORDX LIKE  BAPIPWDX.
+
+START-OF-SELECTION.
+CALL SCREEN 0100.
+
+*&---------------------------------------------------------------------*
+*&      Module  STATUS_0100  OUTPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE STATUS_0100 OUTPUT.
+  SET PF-STATUS 'PF'.
+*  SET TITLEBAR 'xxx'.
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_0100  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE USER_COMMAND_0100 INPUT.
+PERFORM get_data.
+
+    CASE SY-UCOMM.
+    WHEN 'BACK' OR 'CANCEL' OR 'EXIT'.
+      LEAVE TO SCREEN 0.
+    WHEN 'BTN_SIFRE'.
+      PERFORM SIFRE.
+  ENDCASE.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Form  SIFRE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM SIFRE .
+
+gs_name-BNAME = ZSB_T_USER-KULLANCI_ADI.
+APPEND gs_name TO gt_name.
+
+lv_len = 12.
+
+  CONCATENATE 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+              'abcdefghijklmnopqrstuvwxyz'
+              '123456789'
+              INTO lv_pass_chars.  "Specifying the character set from which password will be generated
+  IF  lv_len GT 10.
+    lv_len = 10.      "Limiting the length of password to 10 characters
+  ENDIF.
+
+PERFORM create_pass.
+
+IF sayacN eq 1 and sayacc eq 1.
+PERFORM send_mail.
+else.
+  PERFORM create_pass.
+ENDIF.
+
+USERNAME = ZSB_T_USER-KULLANCI_ADI.
+PASSWORD = lv_password.
+
+CALL FUNCTION 'BAPI_USER_UNLOCK'
+  EXPORTING
+    USERNAME       = USERNAME
+  TABLES
+    RETURN         = RETURN.
+
+CALL FUNCTION 'BAPI_USER_CHANGE'
+  EXPORTING
+   USERNAME                 = USERNAME
+   PASSWORD                 = PASSWORD
+   PASSWORDX                = 'X'
+  TABLES
+*   PARAMETER                =
+    RETURN                   = RETURN.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CREATE_PASS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM CREATE_PASS .
+  data: u(26) TYPE c,
+        l(26) TYPE c.
+  l = 'abcdefghijklmnopqrstuvwxyz'.
+
+WHILE sayacN = '0' or sayacC = '0'.
+  sayacN = '0'.
+sayacC = '0'.
+CLEAR: smth,length,index,num,char.
+
+* Function module which generates the password
+  CALL FUNCTION 'RSEC_GENERATE_PASSWORD'
+    EXPORTING
+      alphabet             = lv_pass_chars
+      alphabet_length      = 0
+      force_init           = ' '
+      output_length        = lv_len
+      downwards_compatible = ' '
+    IMPORTING
+      output               = lv_password
+    EXCEPTIONS
+      some_error           = 1.
+
+  IF l ca lv_password.
+
+smth = lv_password.
+length = STRLEN( smth ).
+
+WHILE index < length.
+  char = smth+index(1).
+  TRY .
+      num = char.
+      sayacN = '1'.
+*      WRITE: / num,'was a number'.
+    CATCH cx_sy_conversion_no_number.
+       sayacC = '1'.
+*      WRITE: / char,'was no number'.
+  ENDTRY.
+  ADD 1 TO index.
+ENDWHILE.
+
+  ENDIF.
+ENDWHILE.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM GET_DATA .
+
+  SELECT
+    BNAME
+    PERSNUMBER FROM USR21 INTO CORRESPONDING FIELDS OF TABLE gt_user
+      WHERE BNAME eq ZSB_T_USER-KULLANCI_ADI.
+
+IF sy-subrc EQ 0.
+    LOOP AT gt_user INTO gs_user.
+      persno = gs_user-PERSNUMBER.
+    ENDLOOP.
+  ELSE.
+  MESSAGE 'Kullanıcı Sistemede Kayıtlı Değil!' TYPE 'I'.
+   LEAVE TO SCREEN 0.
+ENDIF.
+
+      SELECT
+    SMTP_ADDR
+    PERSNUMBER FROM ADR6 INTO CORRESPONDING FIELDS OF TABLE gt_mail
+    WHERE PERSNUMBER eq persno .
+
+    LOOP AT gt_mail INTO gs_mail.
+      mail = gs_mail-SMTP_ADDR.
+    ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  SEND_MAIL
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM SEND_MAIL .
+DATA: LT_MAILSUBJECT     TYPE SODOCCHGI1.
+DATA: LT_MAILRECIPIENTS  TYPE STANDARD TABLE OF SOMLREC90 WITH HEADER LINE.
+DATA: LT_MAILTXT         TYPE STANDARD TABLE OF SOLI      WITH HEADER LINE.
+* Recipients
+LT_MAILRECIPIENTS-REC_TYPE  = 'U'.
+LT_MAILRECIPIENTS-RECEIVER = mail.
+APPEND LT_MAILRECIPIENTS .
+CLEAR LT_MAILRECIPIENTS .
+* Subject.
+LT_MAILSUBJECT-OBJ_NAME = 'Password'.
+LT_MAILSUBJECT-OBJ_LANGU = SY-LANGU.
+LT_MAILSUBJECT-OBJ_DESCR = 'Şifre Yenileme'.
+* Mail Contents
+LT_MAILTXT = lv_password.
+APPEND LT_MAILTXT. CLEAR LT_MAILTXT.
+* Send Mail
+CALL FUNCTION 'SO_NEW_DOCUMENT_SEND_API1'
+  EXPORTING
+    DOCUMENT_DATA              = LT_MAILSUBJECT
+  TABLES
+    OBJECT_CONTENT             = LT_MAILTXT
+    RECEIVERS                  = LT_MAILRECIPIENTS
+  EXCEPTIONS
+    TOO_MANY_RECEIVERS         = 1
+    DOCUMENT_NOT_SENT          = 2
+    DOCUMENT_TYPE_NOT_EXIST    = 3
+    OPERATION_NO_AUTHORIZATION = 4
+    PARAMETER_ERROR            = 5
+    X_ERROR                    = 6
+    ENQUEUE_ERROR              = 7
+    OTHERS                     = 8.
+IF SY-SUBRC EQ 0.
+  COMMIT WORK.
+*   Push mail out from SAP outbox
+  SUBMIT RSCONN01 WITH MODE = 'INT' AND RETURN.
+ENDIF.
+
+  IF SY-SUBRC eq 0.
+    MESSAGE 'Olağan bloke kaldırıldı, şifre başarılı şekilde değiştirildi ve mail adresinize gönderildi!' TYPE 'I'.
+  ELSE.
+      MESSAGE 'Mail gönderimi başarısız!' TYPE 'A'.
+  ENDIF.
+
+ENDFORM.
